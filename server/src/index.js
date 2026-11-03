@@ -3,8 +3,12 @@ import cors from "cors";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import fs from "node:fs";
 
 const app = express();
+app.disable("x-powered-by");
 app.use(cors({ origin: true }));
 app.use(express.json());
 app.get("/health", (_req, res) => res.json({ ok: true, service: "phong-sinh-server" }));
@@ -29,10 +33,12 @@ function safeName(value) {
 
 io.on("connection", (socket) => {
   socket.emit("world:init", [...players.values()].map(publicPlayer));
+  socket.emit("world:count", players.size);
 
   socket.on("player:join", (payload, ack = () => {}) => {
     const name = safeName(payload?.name);
     if (!name) return ack({ ok: false, error: "Tên nhân vật cần có ít nhất 2 ký tự." });
+    if (players.has(socket.id)) return ack({ ok: false, error: "Bạn đã vào thế giới." });
     const duplicate = [...players.values()].some(p => p.name.toLowerCase() === name.toLowerCase());
     if (duplicate) return ack({ ok: false, error: "Tên đang được sử dụng trong thế giới này." });
 
@@ -48,14 +54,16 @@ io.on("connection", (socket) => {
       id: socket.id, balance: balances.get(socket.id),
       fish: inventories.get(socket.id), merit: merits.get(socket.id)
     });
+    socket.emit("world:init", [...players.values()].filter(p => p.id !== socket.id).map(publicPlayer));
     socket.broadcast.emit("player:joined", publicPlayer(player));
+    io.emit("world:count", players.size);
     ack({ ok: true, player: publicPlayer(player) });
   });
 
   socket.on("player:move", (payload) => {
     const p = players.get(socket.id);
     if (!p || !payload) return;
-    // Minimal server-side bounds and speed sanity checks for this prototype.
+    // Ràng buộc tọa độ cơ bản cho bản demo; không thay thế anti-cheat production.
     const x = Number(payload.x), z = Number(payload.z), rotation = Number(payload.rotation);
     if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(rotation)) return;
     p.x = Math.max(-18, Math.min(18, x));
@@ -67,6 +75,8 @@ io.on("connection", (socket) => {
 
   socket.on("shop:buy", (_payload, ack = () => {}) => {
     if (!players.has(socket.id)) return ack({ ok: false, error: "Hãy vào thế giới trước." });
+    const p = players.get(socket.id);
+    if (Math.hypot(p.x - 5, p.z - 1) > 3.8) return ack({ ok: false, error: "Hãy đến gần quầy bán cá để mua." });
     const price = 10;
     const balance = balances.get(socket.id) ?? 0;
     if (balance < price) return ack({ ok: false, error: "Bạn không đủ tiền demo để mua cá." });
@@ -108,8 +118,25 @@ io.on("connection", (socket) => {
     inventories.delete(socket.id);
     merits.delete(socket.id);
     io.emit("player:left", socket.id);
+    io.emit("world:count", players.size);
+    for (const key of processedReleases) if (key.startsWith(`${socket.id}:`)) processedReleases.delete(key);
   });
 });
+
+// Production: máy chủ Node phục vụ cả build React và API/socket trên cùng domain.
+const distDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../client/dist");
+if (fs.existsSync(path.join(distDir, "index.html"))) {
+  app.use(express.static(distDir, { index: false, maxAge: "1h" }));
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/socket.io") || req.path.startsWith("/health")) return next();
+    res.sendFile(path.join(distDir, "index.html"));
+  });
+} else {
+  app.get("/", (_req, res) => res.status(503).json({
+    ok: false,
+    message: "Chưa có client/dist. Chạy npm run render-build ở thư mục gốc."
+  }));
+}
 
 const PORT = Number(process.env.PORT || 3001);
 httpServer.listen(PORT, "0.0.0.0", () => console.log(`Phóng Sinh server listening on :${PORT}`));

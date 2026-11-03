@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: phong-sinh-3d
+    runtime: node
+    plan: free
+    buildCommand: npm run render-build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production

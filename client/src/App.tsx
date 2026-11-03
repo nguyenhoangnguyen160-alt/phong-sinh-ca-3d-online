@@ -1,5 +1,5 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Environment, Sky, Text } from "@react-three/drei";
+import { Sky, Text } from "@react-three/drei";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { io, Socket } from "socket.io-client";
@@ -7,7 +7,13 @@ import { io, Socket } from "socket.io-client";
 type Player = { id: string; name: string; x: number; z: number; rotation: number; action: string };
 type State = { balance: number; fish: number; merit: number };
 type Notice = { text: string; kind?: "error" | "success" };
-const SERVER = import.meta.env.VITE_SERVER_URL || "http://localhost:3001";
+// Production: dùng cùng origin để Socket.IO và React chạy trên một Render Web Service.
+// Dev: có thể cấu hình VITE_SERVER_URL trong client/.env.
+const SERVER = import.meta.env.VITE_SERVER_URL?.trim() || (import.meta.env.DEV ? "http://localhost:3001" : window.location.origin);
+const ACK_TIMEOUT = 9000;
+
+type Ack = { ok: boolean; error?: string; message?: string; player?: Player; balance?: number; fish?: number; merit?: number };
+
 
 function Tree({ position, scale = 1 }: { position: [number, number, number]; scale?: number }) {
   return <group position={position} scale={scale}>
@@ -51,15 +57,21 @@ function World({ socket, joined, name, notice }: { socket: Socket; joined: boole
   const [others, setOthers] = useState<Record<string, Player>>({});
   const keys = useRef<Set<string>>(new Set());
   const moveTimer = useRef(0);
-  const [fishOnHand, setFishOnHand] = useState(false);
-  const [releaseAnim, setReleaseAnim] = useState(false);
+  const [fishOnHand] = useState(false);
+  const [releaseAnim] = useState(false);
   const localPlayer: Player = { id: socket.id || "local", name, ...pos, action: keys.current.size ? "walk" : "idle" };
 
   useEffect(() => {
-    const down = (e: KeyboardEvent) => { if (["w","a","s","d","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.key)) { e.preventDefault(); keys.current.add(e.key.toLowerCase()); } };
+    const down = (e: KeyboardEvent) => { if ((e.target as HTMLElement)?.closest("input, textarea, select")) return; if (["w","a","s","d","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.key)) { e.preventDefault(); keys.current.add(e.key.toLowerCase()); } };
     const up = (e: KeyboardEvent) => keys.current.delete(e.key.toLowerCase());
+    const virtual = (e: Event) => {
+      const { key, pressed } = (e as CustomEvent<{key: string; pressed: boolean}>).detail;
+      if (pressed) keys.current.add(key); else keys.current.delete(key);
+    };
+    const clear = () => keys.current.clear();
     window.addEventListener("keydown", down); window.addEventListener("keyup", up);
-    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
+    window.addEventListener("phongsinh:move", virtual); window.addEventListener("blur", clear);
+    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); window.removeEventListener("phongsinh:move", virtual); window.removeEventListener("blur", clear); };
   }, []);
   useEffect(() => {
     const init = (list: Player[]) => setOthers(Object.fromEntries(list.map(p => [p.id, p])));
@@ -98,17 +110,8 @@ function World({ socket, joined, name, notice }: { socket: Socket; joined: boole
 
   const nearShop = Math.hypot(pos.x - 5, pos.z - 1) < 3.3;
   const nearRiver = pos.z < -5;
-  const buy = () => socket.emit("shop:buy", {}, (r: any) => notice({ text: r.message || r.error, kind: r.ok ? "success" : "error" }));
-  const release = () => {
-    if (!nearRiver) return notice({ text: "Hãy đi đến gần bờ sông trước khi phóng sinh.", kind: "error" });
-    setReleaseAnim(true);
-    setTimeout(() => {
-      socket.emit("fish:release", { releaseId: crypto.randomUUID() }, (r: any) => {
-        notice({ text: r.message || r.error, kind: r.ok ? "success" : "error" });
-        setReleaseAnim(false);
-      });
-    }, 900);
-  };
+
+
 
   return <>
     <color attach="background" args={["#c7e4ed"]} />
@@ -116,7 +119,7 @@ function World({ socket, joined, name, notice }: { socket: Socket; joined: boole
     <ambientLight intensity={1.25} />
     <directionalLight position={[5, 12, 7]} intensity={2.1} castShadow shadow-mapSize-width={1024} shadow-mapSize-height={1024} />
     <Sky distance={450000} sunPosition={[20, 35, 10]} turbidity={7} rayleigh={1.3} />
-    <Environment preset="park" />
+    <hemisphereLight args={["#e6f8ff", "#7f9864", 1.0]} />
     {/* Ground and river */}
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.12, 0]} receiveShadow><planeGeometry args={[42, 42]} /><meshStandardMaterial color="#87a96b" roughness={1} /></mesh>
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.05, -11]} receiveShadow><planeGeometry args={[44, 12]} /><meshStandardMaterial color="#8b9c79" /></mesh>
@@ -144,29 +147,68 @@ function World({ socket, joined, name, notice }: { socket: Socket; joined: boole
 }
 
 export default function App() {
-  const socket = useMemo(() => io(SERVER, { autoConnect: true }), []);
+  const socket = useMemo(() => io(SERVER, { autoConnect: true, reconnection: true, reconnectionAttempts: Infinity, timeout: 8000 }), []);
   const [name, setName] = useState("");
   const [joined, setJoined] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [state, setState] = useState<State>({ balance: 100, fish: 0, merit: 0 });
-  const [online, setOnline] = useState(1);
+  const [online, setOnline] = useState(0);
+  const [connected, setConnected] = useState(socket.connected);
+  const [connecting, setConnecting] = useState(false);
+  const [joining, setJoining] = useState(false);
   useEffect(() => {
     const update = (s: State) => setState(s);
+    const onConnect = () => { setConnected(true); setConnecting(false); };
+    const onDisconnect = () => { setConnected(false); setJoined(false); setJoining(false); };
+    const onError = () => { setConnected(false); setConnecting(false); };
+    const count = (n: number) => setOnline(n);
     socket.on("player:state", update);
-    socket.on("player:joined", () => setOnline(v => v + 1));
-    socket.on("player:left", () => setOnline(v => Math.max(1, v - 1)));
-    return () => { socket.off("player:state", update); socket.off("player:joined"); socket.off("player:left"); socket.disconnect(); };
+    socket.on("world:count", count);
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+    socket.on("connect_error", onError);
+    // React StrictMode có thể cleanup rồi mount lại effect trong dev.
+    if (!socket.connected) socket.connect();
+    return () => {
+      socket.off("player:state", update); socket.off("world:count", count);
+      socket.off("connect", onConnect); socket.off("disconnect", onDisconnect);
+      socket.off("connect_error", onError); socket.disconnect();
+    };
   }, [socket]);
-  const showNotice = useCallback((n: Notice) => { setNotice(n); window.setTimeout(() => setNotice(null), 3500); }, []);
-  const join = () => socket.emit("player:join", { name }, (r: any) => {
-    if (r.ok) setJoined(true); else showNotice({ text: r.error, kind: "error" });
-  });
+  const showNotice = useCallback((n: Notice) => { setNotice(n); window.setTimeout(() => setNotice(null), 4500); }, []);
+  const join = () => {
+    if (joining) return;
+    if (name.trim().length < 2) return showNotice({ text: "Tên cần có ít nhất 2 ký tự.", kind: "error" });
+    if (!socket.connected) {
+      setConnecting(true); socket.connect();
+      return showNotice({ text: "Máy chủ chưa kết nối. Đang thử lại, hãy nhấn Vào thế giới sau khi kết nối.", kind: "error" });
+    }
+    setJoining(true);
+    socket.timeout(ACK_TIMEOUT).emit("player:join", { name: name.trim() }, (err: Error | null, r: Ack) => {
+      setJoining(false);
+      if (err) return showNotice({ text: "Máy chủ phản hồi quá lâu. Hãy thử lại.", kind: "error" });
+      if (r?.ok) { setJoined(true); showNotice({ text: `Chào mừng ${name.trim()} đến Cồn Bình An!`, kind: "success" }); }
+      else showNotice({ text: r?.error || "Không thể vào thế giới.", kind: "error" });
+    });
+  };
+  const action = (event: "shop:buy" | "fish:release") => {
+    if (!socket.connected) return showNotice({ text: "Đã mất kết nối. Hãy kiểm tra mạng.", kind: "error" });
+    const payload = event === "fish:release" ? { releaseId: crypto.randomUUID() } : {};
+    socket.timeout(ACK_TIMEOUT).emit(event, payload, (err: Error | null, r: Ack) => {
+      if (err) return showNotice({ text: "Không nhận được phản hồi từ máy chủ. Hãy thử lại.", kind: "error" });
+      if (r?.ok && r.balance !== undefined && r.fish !== undefined && r.merit !== undefined)
+        setState({ balance: r.balance, fish: r.fish, merit: r.merit });
+      showNotice({ text: r?.message || r?.error || "Thao tác không thành công.", kind: r?.ok ? "success" : "error" });
+    });
+  };
+  const mobileKey = (key: string, pressed: boolean) => window.dispatchEvent(new CustomEvent("phongsinh:move", { detail: {key, pressed} }));
   return <main className="app">
     <header className="topbar">
       <div className="brand"><span className="brand-mark">◉</span><div><strong>PHÓNG SINH</strong><small>Thế giới bình an bên sông</small></div></div>
       <div className="stats"><div><small>CÔNG ĐỨC</small><strong>{state.merit}</strong></div><div><small>CÁ ĐANG MANG</small><strong>{state.fish}</strong></div><div><small>NGƯỜI CHƠI</small><strong>{online}</strong></div></div>
     </header>
     <section className="game">
+      <div className={`connection ${connected ? "is-online" : "is-offline"}`} role="status"><span className="connection-dot" />{connected ? "Máy chủ trực tuyến" : connecting ? "Đang kết nối..." : "Máy chủ ngoại tuyến"}</div>
       <Canvas shadows camera={{ position: [0, 5, 10], fov: 55 }} dpr={[1, 1.5]}>
         <Suspense fallback={null}><World socket={socket} joined={joined} name={name || "Khách"} notice={showNotice} /></Suspense>
       </Canvas>
@@ -175,21 +217,29 @@ export default function App() {
         <p>Đặt tên nhân vật rồi bước vào thế giới phóng sinh 3D.</p>
         <label htmlFor="player-name">Tên nhân vật</label>
         <input id="player-name" value={name} maxLength={20} onChange={e => setName(e.target.value)} placeholder="Ví dụ: Minh An" onKeyDown={e => e.key === "Enter" && join()} />
-        <button onClick={join} disabled={name.trim().length < 2}>Vào thế giới</button>
-        <small className="hint">Bản thử nghiệm — tên chưa gắn với tài khoản đăng nhập.</small>
+        <button onClick={join} disabled={name.trim().length < 2 || joining}>{joining ? "Đang vào thế giới..." : "Vào thế giới"}</button>
+        <small className="hint">{connected ? "Sẵn sàng khám phá!" : "Nếu máy chủ miễn phí đang khởi động, hãy thử lại sau ít phút."} Tên chưa gắn tài khoản thật.</small>
       </div>}
       {joined && <div className="hud">
         <div className="money"><span>Ví demo</span><strong>{state.balance} xu</strong></div>
         <div className="controls"><span>W A S D · Di chuyển</span><span>Đi đến quầy hàng để mua cá</span></div>
         <div className="actions">
-          <button onClick={() => socket.emit("shop:buy", {}, (r: any) => { if (r.ok) setState({ balance: r.balance, fish: r.fish, merit: r.merit }); showNotice({ text: r.message || r.error, kind: r.ok ? "success" : "error" }); })}>Mua cá · 10 xu</button>
-          <button className="release" onClick={() => socket.emit("fish:release", { releaseId: crypto.randomUUID() }, (r: any) => { if (r.ok) setState({ balance: r.balance, fish: r.fish, merit: r.merit }); showNotice({ text: r.message || r.error, kind: r.ok ? "success" : "error" }); })}>Phóng sinh cá</button>
+          <button onClick={() => action("shop:buy")}>🐟 Mua cá · 10 xu</button>
+          <button className="release" onClick={() => action("fish:release")}>✨ Phóng sinh cá</button>
         </div>
-        <p className="hint">Đi bộ ra bờ sông (phía trước theo bản đồ) rồi chọn Phóng sinh cá.</p>
+        <p className="hint">Đi đến gần quầy cá ở phía bên phải để mua · Ra bờ sông phía trước để thả cá.</p>
+        <div className="mobile-pad" aria-label="Điều khiển di chuyển">
+          <div />
+          <button aria-label="Tiến" onPointerDown={e => {e.preventDefault(); mobileKey("w", true);}} onPointerUp={() => mobileKey("w", false)} onPointerCancel={() => mobileKey("w", false)}>▲</button>
+          <div />
+          <button aria-label="Trái" onPointerDown={e => {e.preventDefault(); mobileKey("a", true);}} onPointerUp={() => mobileKey("a", false)} onPointerCancel={() => mobileKey("a", false)}>◀</button>
+          <button aria-label="Lùi" onPointerDown={e => {e.preventDefault(); mobileKey("s", true);}} onPointerUp={() => mobileKey("s", false)} onPointerCancel={() => mobileKey("s", false)}>▼</button>
+          <button aria-label="Phải" onPointerDown={e => {e.preventDefault(); mobileKey("d", true);}} onPointerUp={() => mobileKey("d", false)} onPointerCancel={() => mobileKey("d", false)}>▶</button>
+        </div>
       </div>}
       {notice && <div className={`toast ${notice.kind || ""}`}>{notice.text}</div>}
       <div className="scene-label">CỒN BÌNH AN <span>•</span> KHU VỰC VEN SÔNG</div>
     </section>
-    <footer><span>🌿 Một hành động nhỏ, một tấm lòng lành.</span><span>Phóng Sinh 3D · Bản MVP</span></footer>
+    <footer><span>🌿 Một hành động nhỏ, một tấm lòng lành.</span><span>Phóng Sinh 3D · Bản 1.0</span></footer>
   </main>;
 }
