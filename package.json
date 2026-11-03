@@ -1,13 +1,8 @@
 {
-  "name": "phong-sinh-3d-online",
-  "version": "1.0.0",
+  "name": "phong-sinh-online",
+  "version": "0.1.0",
   "private": true,
-  "type": "module",
-  "scripts": {
-    "render-build": "npm install --prefix server --no-audit --no-fund && npm install --prefix client --no-audit --no-fund && npm run build --prefix client",
-    "start": "node server/src/index.js",
-    "dev:server": "npm run dev --prefix server",
-    "dev:client": "npm run dev --prefix client"
-  },
-  "engines": { "node": ">=20 <25" }
+  "description": "Phóng Sinh Online: thế giới 3D nhiều người chơi (MVP, không phụ thuộc package ngoài)",
+  "engines": { "node": ">=18" },
+  "scripts": { "start": "node server.js", "test": "node test.js", "build:client": "python3 build_client.py ../phong-sinh-the-gioi-3d.html" }
 }

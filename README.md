@@ -1,68 +1,54 @@
-# PHÓNG SINH 3D ONLINE — Bản sửa 1.0
+# Phóng Sinh Online — gói sửa đường dẫn và cấu hình Render
 
-Game web 3D (React + React Three Fiber + Three.js) với máy chủ Node.js / Express / Socket.IO. Bản sửa gộp client và server vào **một Render Web Service**; không còn bắt buộc phải deploy Static Site và API riêng.
+## Triển khai Render (Web Service, Node)
+- Root Directory: để trống (package.json ở gốc).
+- Build Command: `npm install --no-audit --no-fund` (không cần phụ thuộc bên ngoài).
+- Start Command: `npm start`.
+- Health Check Path: `/health`.
+- Environment: `SECURE_COOKIE=1` khi dùng domain HTTPS Render.
+- Render tự cấp `PORT`; không cần đặt thủ công.
+- Trang chủ và WebSocket cùng dùng URL dịch vụ Web Service, không dùng Static Site.
 
-## Đã sửa
+**CẢNH BÁO QUAN TRỌNG:** Game lưu người dùng, phiên, công đức vào `data.json`.
+File này nằm trên đĩa tạm của Render Free và CÓ THỂ BỊ MẤT khi redeploy, khởi động lại hoặc di chuyển instance.
+KHÔNG nên mở đăng ký công khai và nhập dữ liệu thật trước khi thay bằng PostgreSQL hoặc lưu trữ bền vững.
+Chưa có kiểm thử hiển thị 3D trên trình duyệt thật và chưa kiểm thử tải 40 người.
 
-- Chạy React build và Socket.IO **trên cùng địa chỉ** để tránh lỗi `localhost:3001` khi lên mạng.
-- Màn hình nhập tên báo rõ tình trạng kết nối, phản hồi quá hạn sau 9 giây thay vì im lặng.
-- Cập nhật số người chơi từ server; hiển thị thông báo mất kết nối, tự kết nối lại.
-- Mua cá giá 10 xu demo khi đứng gần quầy, phóng sinh khi đến bờ sông; công đức và số cá đồng bộ trên HUD.
-- Thêm nút di chuyển cảm ứng ▲◀▼▶ trên màn hình nhỏ; giữ WASD và phím mũi tên trên PC.
-- Bỏ phụ thuộc HDR tải từ bên ngoài để cảnh không bị trắng khi dịch vụ ảnh tạm lỗi.
-- Giữ bản đồ 3D và thiết kế hiện có; chỉnh nút và thông báo trên điện thoại.
+## Thay đổi trong gói này
+- Đưa giao diện vào `public/index.html` đúng với đường dẫn `server.js` phục vụ.
+- Bổ sung endpoint `GET /health`.
+- Thêm `.gitignore` tránh tải dữ liệu tài khoản, phiên và file tạm lên GitHub.
+- Không thay đổi nghiệp vụ gameplay và giao thức WebSocket.
 
-## Cách deploy dễ nhất: Render Web Service (KHÔNG phải Static Site)
+---
 
-1. Giải nén toàn bộ ZIP, đưa **cả thư mục `client`, `server`, `package.json`, `render.yaml`** lên cùng một repository GitHub. Không chỉ upload thư mục `server`.
-2. Trên [dashboard.render.com](https://dashboard.render.com), chọn **New → Web Service** và nối repository đó. Có thể sử dụng `render.yaml` (Blueprint) nếu muốn.
-3. Thiết lập:
-   - **Runtime:** Node
-   - **Root Directory:** để trống (thư mục gốc repo)
-   - **Build Command:** `npm run render-build`
-   - **Start Command:** `npm start`
-   - **Health Check Path:** `/health`
-   - **Environment:** `NODE_ENV=production`
-4. Deploy. Vào `https://<ten-web-service>.onrender.com/health` phải thấy `{"ok":true,"service":"phong-sinh-server"}`.
-5. Mở `https://<ten-web-service>.onrender.com/`, thấy dòng **Máy chủ trực tuyến**, nhập tên từ 2 ký tự và bấm **Vào thế giới**.
-6. Nếu cần giữ tên miền `phong-sinh-game.onrender.com` hiện tại: tên đó đang thuộc Static Site cũ, nên **không tự chuyển** sang Web Service. Có thể dùng URL mới, hoặc chuyển tên miền bằng cấu hình Render sau khi kiểm tra xong.
+# Phóng Sinh Online (MVP)
 
-**Quan trọng:** Không đặt biến `VITE_SERVER_URL` khi deploy chung. Nếu repository chứa `client/.env` với URL localhost, hãy xóa/không commit file đó. `client/.env.example` chỉ dành cho phát triển local.
+## Chạy
+    cd phong-sinh-online
+    node server.js          # cần Node 18+, không cần npm install
+    # mở http://localhost:3000 bằng hai trình duyệt (hoặc một cửa sổ ẩn danh) để thử hai tài khoản
+    node test.js            # kiểm thử giao thức hai tài khoản
 
-## Chạy trên máy (Node.js 20+)
+Biến môi trường: PORT (mặc định 3000), DATA_FILE (mặc định data.json), SECURE_COOKIE=1 (bật khi chạy sau HTTPS).
+Trang cần tải three.js và font từ internet (cdnjs, Google Fonts).
 
-Ở thư mục gốc dự án:
+## Cấu trúc
+- server.js: HTTP + WebSocket tự viết, xác thực, nhân vật, mua cá, phóng sinh, công đức, xếp hạng.
+- public/index.html: client 3D (đăng nhập, tạo nhân vật, thế giới, người chơi khác).
+- build_client.py: sinh public/index.html từ ../phong-sinh-the-gioi-3d.html (nếu sửa client, sửa file nguồn rồi chạy lại hoặc sửa thẳng public/index.html).
+- test.js: kiểm thử tích hợp (37 kiểm tra).
 
-```bash
-npm run render-build
-npm start
-```
+## Cách máy chủ chống gian lận
+- Số dư, hành trang, công đức chỉ nằm ở máy chủ; client chỉ gửi yêu cầu.
+- Mua cá: kiểm tra vị trí gần quầy, loại cá, số lượng nguyên 1 đến 10, đủ số dư.
+- Phóng sinh: máy chủ cấp lượt (mã duy nhất) rồi chỉ ghi nhận khi client xác nhận sau ít nhất 1,8 giây; mỗi lượt xác nhận được đúng một lần; mỗi con cá nằm đúng một dòng sổ cái. Công đức = số dòng sổ cái.
+- Di chuyển: máy chủ giới hạn tốc độ và vùng đi được, vi phạm thì kéo nhân vật về vị trí cũ.
+- Mật khẩu băm scrypt có salt; phiên là cookie HttpOnly SameSite=Strict, token chỉ lưu dạng băm; giới hạn tần suất đăng nhập và tin nhắn.
 
-Mở `http://localhost:3001` (giao diện + socket trên cùng cổng).
-
-Để phát triển nóng, chạy 2 terminal:
-
-```bash
-npm run dev:server
-```
-
-```bash
-npm run dev:client
-```
-
-Client Vite chạy `http://localhost:5173`, API dev mặc định `http://localhost:3001`.
-
-## Thử chức năng
-
-1. Mở link web → xác nhận “Máy chủ trực tuyến”.
-2. Nhập tên 2–20 ký tự → Vào thế giới.
-3. Dùng WASD/mũi tên hoặc phím cảm ứng đi đến **quầy cá ở bên phải** → Mua cá (trừ 10 xu).
-4. Đi đến khu vực **bờ sông phía trước** → Phóng sinh cá (giảm 1 cá, cộng 1 công đức).
-5. Mở ở cửa sổ khác với tên khác → kiểm tra số người chơi và nhân vật của nhau.
-6. Thử tắt mạng: game cần báo máy chủ ngoại tuyến, không bị đứng nút mãi mãi.
-
-## Giới hạn và lưu ý
-
-Đây vẫn là **game demo/MVP**, chưa phải trò chơi thương mại. 100 xu, cá và công đức là số liệu mô phỏng; **không có giao dịch hay phóng sinh động vật thật**. Dữ liệu được giữ trong bộ nhớ và sẽ mất khi máy chủ Render ngủ, khởi động lại hoặc người chơi rời phòng. Chưa có tài khoản, xác thực, cơ sở dữ liệu, thanh toán thật, chống gian lận toàn diện hoặc kiểm thử tải production. Dịch vụ Render free có thể cần thời gian khởi động lại sau khi ngủ.
-
-Đừng dùng dữ liệu công đức demo như số liệu đóng góp thật. Nếu muốn lưu lâu dài cần triển khai database và cơ chế xác thực trước.
+## Chưa có / cần làm tiếp
+- Khôi phục mật khẩu (cần dịch vụ gửi email), Google Login, chat, báo cáo/chặn người dùng.
+- Lưu trữ đang là file JSON (một tiến trình duy nhất). Muốn nhiều máy chủ hoặc nhiều người hơn cần PostgreSQL và Redis.
+- Máy chủ chưa kiểm tra va chạm với quầy/cây (chỉ kiểm tra vùng đi được và tốc độ).
+- Chưa chạy thử client 3D trên trình duyệt thật; chưa kiểm thử tải nhiều người.
+- Chưa có HTTPS (đặt sau Nginx/Caddy hoặc nền tảng host có HTTPS rồi bật SECURE_COOKIE=1).
